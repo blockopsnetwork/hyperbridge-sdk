@@ -12,7 +12,7 @@ COPY . .
 
 RUN pnpm build
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S sdkgroup && adduser -S sdkuser -G sdkgroup
 
 USER appuser
 
