@@ -14,7 +14,7 @@ RUN pnpm build
 
 RUN addgroup -S sdkgroup && adduser -S sdkuser -G sdkgroup
 
-USER appuser
+USER sdkuser
 
 EXPOSE 3000
 
