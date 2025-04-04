@@ -1,5 +1,8 @@
-import { HexString, IPostRequest, RequestStatus, TimeoutStatus } from "@/types"
+import { type HexString, type IGetRequest, type IPostRequest, RequestStatus, TimeoutStatus } from "@/types"
+import type { RequestStatusKey, TimeoutStatusKey, RetryConfig } from "@/types"
 import { encodePacked, keccak256, toHex } from "viem"
+import { createConsola, LogLevels } from "consola"
+import { _queryRequestInternal } from "./query-client"
 
 export * from "./utils/mmr"
 export * from "./utils/substrate"
@@ -10,7 +13,7 @@ export const DEFAULT_POLL_INTERVAL = 5_000
  * Sleeps for the specified number of milliseconds.
  * @param ms The number of milliseconds to sleep.
  */
-export function sleep(ms?: number) {
+export function sleep(ms?: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms || DEFAULT_POLL_INTERVAL))
 }
 
@@ -56,13 +59,58 @@ export function postRequestCommitment(post: IPostRequest): HexString {
 	)
 }
 
+export const DEFAULT_LOGGER = createConsola({
+	level: LogLevels.silent,
+})
+
+export async function retryPromise<T>(operation: () => Promise<T>, retryConfig: RetryConfig): Promise<T> {
+	const { logger = DEFAULT_LOGGER, logMessage = "Retry operation failed" } = retryConfig
+
+	let lastError: unknown
+	for (let i = 0; i < retryConfig.maxRetries; i++) {
+		try {
+			return await operation()
+		} catch (error) {
+			logger.trace(`Retrying(${i}) > ${logMessage}`)
+			lastError = error
+			await new Promise((resolve) => setTimeout(resolve, retryConfig.backoffMs * 2 ** i))
+		}
+	}
+
+	throw lastError
+}
+
+/**
+ * Calculates the commitment hash for a get request.
+ * @param get The get request to calculate the commitment hash for.
+ * @returns The commitment hash.
+ */
+export function getRequestCommitment(get: IGetRequest): HexString {
+	const keysEncoding = "0x".concat(get.keys.map((key) => key.slice(2)).join(""))
+	return keccak256(
+		encodePacked(
+			["bytes", "bytes", "uint64", "uint64", "uint64", "bytes", "bytes", "bytes"],
+			[
+				toHex(get.source),
+				toHex(get.dest),
+				get.nonce,
+				get.height,
+				get.timeoutTimestamp,
+				get.from,
+				keysEncoding as HexString,
+				get.context,
+			],
+		),
+	)
+}
+
 /**
  ** Calculates the weight of a request status.
  * Used to determine the progression of a request through its lifecycle.
  * Higher weights represent more advanced states in the processing pipeline.
  * @returns A record mapping each RequestStatus to its corresponding weight value.
  */
-export const REQUEST_STATUS_WEIGHTS: Record<RequestStatus, number> = {
+export const REQUEST_STATUS_WEIGHTS: Record<RequestStatusKey, number> = {
 	[RequestStatus.SOURCE]: 0,
 	[RequestStatus.SOURCE_FINALIZED]: 1,
 	[RequestStatus.HYPERBRIDGE_DELIVERED]: 2,
@@ -78,7 +126,7 @@ export const REQUEST_STATUS_WEIGHTS: Record<RequestStatus, number> = {
  * Higher weights represent more advanced states in the timeout processing.
  * @returns A record mapping each TimeoutStatus to its corresponding weight value.
  */
-export const TIMEOUT_STATUS_WEIGHTS: Record<TimeoutStatus, number> = {
+export const TIMEOUT_STATUS_WEIGHTS: Record<TimeoutStatusKey, number> = {
 	[TimeoutStatus.PENDING_TIMEOUT]: 1,
 	[TimeoutStatus.DESTINATION_FINALIZED_TIMEOUT]: 2,
 	[TimeoutStatus.HYPERBRIDGE_TIMED_OUT]: 3,
@@ -98,7 +146,7 @@ export const TIMEOUT_STATUS_WEIGHTS: Record<TimeoutStatus, number> = {
  *
  * @returns A record mapping each RequestStatus and TimeoutStatus to its corresponding weight value.
  */
-export const COMBINED_STATUS_WEIGHTS: Record<RequestStatus | TimeoutStatus, number> = {
+export const COMBINED_STATUS_WEIGHTS: Record<RequestStatusKey | TimeoutStatusKey, number> = {
 	[RequestStatus.SOURCE]: 0,
 	[RequestStatus.SOURCE_FINALIZED]: 1,
 	[RequestStatus.HYPERBRIDGE_DELIVERED]: 2,

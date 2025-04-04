@@ -47,16 +47,18 @@ const generateSubstrateYaml = async (chain, config) => {
 	const header = await rpc.call("chain_getHeader", [])
 	const blockNumber = currentEnv === "local" ? hexToNumber(header.number) : config.startBlock
 	const chainTypesSection = chainTypesConfig ? `\n  chaintypes:\n    file: ${chainTypesConfig}` : ""
-	
+
 	// Check if this is a Hyperbridge chain (stateMachineId is KUSAMA-4009 or POLKADOT-3367)
 	const isHyperbridgeChain = config.stateMachineId === "KUSAMA-4009" || config.stateMachineId === "POLKADOT-3367"
-	
+
 	// Add AssetTeleported handler only for Hyperbridge chains
-	const assetTeleportedHandler = isHyperbridgeChain ? `        - handler: handleSubstrateAssetTeleportedEvent
+	const assetTeleportedHandler = isHyperbridgeChain
+		? `        - handler: handleSubstrateAssetTeleportedEvent
           kind: substrate/EventHandler
           filter:
             module: xcmGateway
-            method: AssetTeleported` : ''
+            method: AssetTeleported`
+		: ""
 
 	return `# // Auto-generated , DO NOT EDIT
 specVersion: 1.0.0
@@ -112,11 +114,21 @@ dataSources:
           filter:
             module: ismp
             method: PostRequestTimeoutHandled
+        - handler: handleSubstrateGetRequestHandledEvent
+          kind: substrate/EventHandler
+          filter:
+            module: ismp
+            method: GetRequestHandled
+        - handler: handleSubstrateGetRequestTimeoutHandledEvent
+          kind: substrate/EventHandler
+          filter:
+            module: ismp
+            method: GetRequestTimeoutHandled
         - handler: handleSubstratePostResponseTimeoutHandledEvent
           kind: substrate/EventHandler
           filter:
             module: ismp
-            method: PostResponseTimeoutHandled${assetTeleportedHandler ? '\n' + assetTeleportedHandler : ''}
+            method: PostResponseTimeoutHandled${assetTeleportedHandler ? "\n" + assetTeleportedHandler : ""}
 
 repository: 'https://github.com/polytope-labs/hyperbridge'`
 }
@@ -208,6 +220,21 @@ dataSources:
           filter:
             topics:
               - 'PostResponseTimeoutHandled(bytes32,string)'
+        - kind: ethereum/LogHandler
+          handler: handleGetRequestEvent
+          filter:
+            topics:
+              - 'GetRequestEvent(string,string,address,bytes[],uint256,uint256,uint256,bytes,uint256)'
+        - kind: ethereum/LogHandler
+          handler: handleGetRequestHandledEvent
+          filter:
+            topics:
+              - 'GetRequestHandled(bytes32,address)'
+        - kind: ethereum/LogHandler
+          handler: handleGetRequestTimeoutHandledEvent
+          filter:
+            topics:
+              - 'GetRequestTimeoutHandled(bytes32,string)'
   - kind: ethereum/Runtime
     startBlock: ${blockNumber}
     options:
@@ -303,10 +330,45 @@ const generateSubstrateWsJson = () => {
 	console.log("Generated substrate-ws.json")
 }
 
+const generateChainIdsByGenesis = () => {
+	const chainIdsByGenesis = {}
+
+	validChains.forEach(([chain, config]) => {
+		if (config.chainId) {
+			chainIdsByGenesis[config.chainId] = config.stateMachineId
+		}
+	})
+
+	const chainIdsByGenesisContent = `// Auto-generated, DO NOT EDIT
+export const CHAIN_IDS_BY_GENESIS = ${JSON.stringify(chainIdsByGenesis, null, 2)}`
+
+	fs.writeFileSync(root + "/src/chain-ids-by-genesis.ts", chainIdsByGenesisContent)
+	console.log("Generated chain-ids-by-genesis.ts")
+}
+
+const generateChainsByIsmpHost = () => {
+	const chainsByIsmpHost = {}
+
+	validChains.forEach(([chain, config]) => {
+		// Only include EVM chains with ethereumHost contract
+		if (config.type === "evm" && config.contracts?.ethereumHost) {
+			chainsByIsmpHost[config.stateMachineId] = config.contracts.ethereumHost
+		}
+	})
+
+	const chainsByIsmpHostContent = `// Auto-generated, DO NOT EDIT
+export const CHAINS_BY_ISMP_HOST = ${JSON.stringify(chainsByIsmpHost, null, 2)}`
+
+	fs.writeFileSync(root + "/src/chains-by-ismp-host.ts", chainsByIsmpHostContent)
+	console.log("Generated chains-by-ismp-host.ts")
+}
+
 generateAllChainYamls()
 	.then(() => {
 		generateMultichainYaml()
 		generateSubstrateWsJson()
+		generateChainIdsByGenesis()
+		generateChainsByIsmpHost()
 		process.exit(0)
 	})
 	.catch((err) => {

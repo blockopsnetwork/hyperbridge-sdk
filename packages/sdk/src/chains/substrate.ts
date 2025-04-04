@@ -2,12 +2,12 @@ import { ApiPromise, WsProvider } from "@polkadot/api"
 import { RpcWebSocketClient } from "rpc-websocket-client"
 import { toHex, hexToBytes, toBytes, bytesToHex } from "viem"
 import { match } from "ts-pattern"
-import capitalize from "lodash/capitalize"
+import { capitalize } from "lodash-es"
 import { u8, Vector } from "scale-ts"
 
-import { BasicProof, isEvmChain, isSubstrateChain, IStateMachine, Message, SubstrateStateProof } from "@/utils"
-import { IChain, IIsmpMessage } from "@/chain"
-import { HexString, IPostRequest } from "@/types"
+import { BasicProof, isEvmChain, isSubstrateChain, type IStateMachine, Message, SubstrateStateProof } from "@/utils"
+import type { IChain, IIsmpMessage } from "@/chain"
+import { type HexString, IGetRequest, type IPostRequest, type IMessage, type StateMachineIdParams } from "@/types"
 import { keccakAsU8a } from "@polkadot/util-crypto"
 
 export interface SubstrateChainParams {
@@ -51,6 +51,16 @@ export class SubstrateChain implements IChain {
 			provider: wsProvider,
 			typesBundle,
 		})
+	}
+
+	/**
+	 * Disconnects the Substrate chain connection.
+	 */
+	public async disconnect() {
+		if (this.api) {
+			await this.api.disconnect()
+			this.api = undefined
+		}
 	}
 
 	/**
@@ -127,22 +137,28 @@ export class SubstrateChain implements IChain {
 	}
 
 	/**
-	 * Queries the proof of the requests.
-	 * @param {HexString[]} requests - The requests to query.
+	 * Queries the proof of the commitments.
+	 * @param {IMessage} message - The message to query.
 	 * @param {string} counterparty - The counterparty address.
 	 * @param {bigint} [at] - The block number to query at.
 	 * @returns {Promise<HexString>} The proof.
 	 */
-	async queryRequestsProof(requests: HexString[], counterparty: string, at?: bigint): Promise<HexString> {
+	async queryProof(message: IMessage, counterparty: string, at?: bigint): Promise<HexString> {
 		const rpc = new RpcWebSocketClient()
 		await rpc.connect(this.params.ws)
+
 		if (isEvmChain(counterparty)) {
 			// for evm chains, query the mmr proof
-			const proof: any = await rpc.call("mmr_queryProof", [Number(at), { Requests: requests }])
+			const proof: any = await rpc.call("mmr_queryProof", [Number(at), message])
 			return toHex(proof.proof)
-		} else if (isSubstrateChain(counterparty)) {
+		}
+
+		if (isSubstrateChain(counterparty)) {
 			// for substrate chains, we use the child trie proof
-			const childTrieKeys = requests.map(requestCommitmentStorageKey)
+			const childTrieKeys =
+				"Requests" in message
+					? message.Requests.map(requestCommitmentStorageKey)
+					: message.Responses.map(responseCommitmentStorageKey)
 			const proof: any = await rpc.call("ismp_queryChildTrieProof", [Number(at), childTrieKeys])
 			const basicProof = BasicProof.dec(toHex(proof.proof))
 			const encoded = SubstrateStateProof.enc({
@@ -156,9 +172,9 @@ export class SubstrateChain implements IChain {
 				},
 			})
 			return toHex(encoded)
-		} else {
-			throw new Error(`Unsupported chain type for counterparty: ${counterparty}`)
 		}
+
+		throw new Error(`Unsupported chain type for counterparty: ${counterparty}`)
 	}
 
 	/**
@@ -169,17 +185,16 @@ export class SubstrateChain implements IChain {
 	async submitUnsigned(
 		message: IIsmpMessage,
 	): Promise<{ transactionHash: string; blockHash: string; blockNumber: number }> {
-		const self = this
-		if (!self.api) throw new Error("API not initialized")
+		if (!this.api) throw new Error("API not initialized")
 		// remove the call and method selectors
-		const args = hexToBytes(self.encode(message)).slice(2)
-		const tx = self.api.tx.ismp.handleUnsigned(args)
+		const args = hexToBytes(this.encode(message)).slice(2)
+		const tx = this.api.tx.ismp.handleUnsigned(args)
 		return new Promise(async (resolve, reject) => {
 			const unsub = await tx.send(async ({ isFinalized, isError, dispatchError, txHash, status }) => {
 				if (isFinalized) {
 					unsub()
 					const blockHash = status.asFinalized.toHex()
-					const header = await self.api!.rpc.chain.getHeader(blockHash)
+					const header = await this.api!.rpc.chain.getHeader(blockHash)
 					resolve({
 						transactionHash: txHash.toHex(),
 						blockHash: blockHash,
@@ -220,6 +235,17 @@ export class SubstrateChain implements IChain {
 	}
 
 	/**
+	 * Get the latest state machine height for a given state machine ID.
+	 * @param {StateMachineIdParams} stateMachineId - The state machine ID.
+	 * @returns {Promise<bigint>} The latest state machine height.
+	 */
+	async latestStateMachineHeight(stateMachineId: StateMachineIdParams): Promise<bigint> {
+		if (!this.api) throw new Error("API not initialized")
+		const latestHeight = await this.api.query.ismp.latestStateMachineHeight(stateMachineId)
+		return BigInt(latestHeight.toString())
+	}
+
+	/**
 	 * Encode an ISMP calldata for a substrate chain.
 	 * @param message The ISMP message to encode.
 	 * @returns The encoded message as a hexadecimal string.
@@ -247,6 +273,11 @@ export class SubstrateChain implements IChain {
 						},
 					},
 				]),
+			)
+			.with({ kind: "GetResponse" }, (message) =>
+				(() => {
+					throw new Error("GetResponse is not yet supported on Substrate chains")
+				})(),
 			)
 			.with({ kind: "TimeoutPostRequest" }, (message) =>
 				Vector(Message).enc([
@@ -311,6 +342,17 @@ function requestCommitmentStorageKey(key: HexString): number[] {
 	return Array.from(new Uint8Array([...prefix, ...keyBytes]))
 }
 
+function responseCommitmentStorageKey(key: HexString): number[] {
+	// Convert "ResponseCommitments" to bytes
+	const prefix = new TextEncoder().encode("ResponseCommitments")
+
+	// Convert hex key to bytes
+	const keyBytes = hexToBytes(key)
+
+	// Combine prefix and key bytes
+	return Array.from(new Uint8Array([...prefix, ...keyBytes]))
+}
+
 /**
  * Converts a state machine ID string to an enum value.
  * @param {string} id - The state machine ID string.
@@ -320,7 +362,7 @@ export function convertStateMachineIdToEnum(id: string): IStateMachine {
 	let [tag, value]: any = id.split("-")
 	tag = capitalize(tag)
 	if (["Evm", "Polkadot", "Kusama"].includes(tag)) {
-		value = parseInt(value)
+		value = Number.parseInt(value)
 	} else {
 		value = Array.from(toBytes(value))
 	}
