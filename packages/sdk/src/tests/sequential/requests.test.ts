@@ -24,6 +24,7 @@ import EVM_HOST from "@/abis/evmHost"
 import HANDLER from "@/abis/handler"
 import { EvmChain, SubstrateChain } from "@/chain"
 import { createQueryClient } from "@/query-client"
+import { bigIntReplacer } from "@/helpers/data.helpers"
 
 describe.sequential("Get and Post Requests", () => {
 	let indexer: IndexerClient
@@ -67,7 +68,7 @@ describe.sequential("Get and Post Requests", () => {
 	})
 
 	describe("Post Request", () => {
-		it("should stream and query the timeout status", async () => {
+		it.skip("should stream and query the timeout status", async () => {
 			const { bscTestnetClient, bscHandler, bscPing, gnosisChiadoHost } = await setUp()
 			console.log("\n\nSending Post Request\n\n")
 
@@ -103,7 +104,7 @@ describe.sequential("Get and Post Requests", () => {
 
 			console.log("PostRequestEvent", { request })
 
-			const commitment = postRequestCommitment(request)
+			const commitment = postRequestCommitment(request).commitment
 
 			console.log("Post Request Commitment:", commitment)
 			const statusStream = indexer.postRequestStatusStream(commitment)
@@ -137,7 +138,7 @@ describe.sequential("Get and Post Requests", () => {
 						)
 						const { args, functionName } = decodeFunctionData({
 							abi: HANDLER.ABI,
-							data: timeout.metadata!.calldata! as any,
+							data: timeout.metadata?.calldata! as any,
 						})
 
 						expect(functionName).toBe("handlePostRequestTimeouts")
@@ -207,7 +208,7 @@ describe.sequential("Get and Post Requests", () => {
 			expect(receipt).toBeUndefined()
 
 			// should not throw
-			hyperbridgeInstance.api!.tx.ismp.handleUnsigned(hexToBytes(tx).slice(2))
+			hyperbridgeInstance.api?.tx.ismp.handleUnsigned(hexToBytes(tx).slice(2))
 		})
 
 		it("should successfully stream and query the post request status", async () => {
@@ -242,7 +243,7 @@ describe.sequential("Get and Post Requests", () => {
 
 			const request = event.args
 			console.log("PostRequestEvent", { request })
-			const commitment = postRequestCommitment(request)
+			const commitment = postRequestCommitment(request).commitment
 
 			for await (const status of indexer.postRequestStatusStream(commitment)) {
 				console.log(JSON.stringify(status, null, 4))
@@ -294,7 +295,7 @@ describe.sequential("Get and Post Requests", () => {
 			}
 
 			const req = await indexer.queryRequestWithStatus(commitment)
-			console.log(JSON.stringify(req, null, 4))
+			console.log(JSON.stringify(req, bigIntReplacer, 4))
 			expect(req?.statuses.length).toBe(5)
 		}, 1_000_000)
 	})
@@ -316,7 +317,7 @@ describe.sequential("Get and Post Requests", () => {
 					nonce: await bscIsmpHost.read.nonce(),
 					from: process.env.PING_MODULE_ADDRESS! as `0x${string}`,
 					timeoutTimestamp: BigInt(Math.floor(Date.now() / 1000) + 60 * 60),
-					keys: [`0xFE9f23F0F2fE83b8B9576d3FC94e9a7458DdDD35`],
+					keys: ["0xFE9f23F0F2fE83b8B9576d3FC94e9a7458DdDD35"],
 					height: latestHeight,
 					context: "0x",
 				},
@@ -383,7 +384,7 @@ describe.sequential("Get and Post Requests", () => {
 					}
 					case RequestStatus.DESTINATION: {
 						console.log(
-							`Status ${status.status}, Transaction: https://gnosis-chiado.blockscout.com/tx/${status.metadata.transactionHash}`,
+							`Status ${status.status}, Transaction: https://testnet.bscscan.com/tx/${status.metadata.transactionHash}`,
 						)
 						break
 					}

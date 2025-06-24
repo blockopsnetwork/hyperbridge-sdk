@@ -5,27 +5,29 @@ import { pad, toHex } from "viem"
 // @ts-ignore
 import mergeRace from "@async-generator/merge-race"
 
-import {
-	RequestStatus,
-	type IndexerQueryClient,
-	type StateMachineUpdate,
-	type StateMachineResponse,
-	type ClientConfig,
-	type RetryConfig,
-	type PostRequestWithStatus,
-	type HexString,
-	TimeoutStatus,
-	type PostRequestTimeoutStatus,
-	type RequestStatusWithMetadata,
-	type AssetTeleported,
-	type AssetTeleportedResponse,
-	type GetRequestWithStatus,
-	type GetResponseByRequestIdResponse,
-	type ResponseCommitmentWithValues,
-	type RequestStatusKey,
-	type TimeoutStatusKey,
-	type PostRequestStatus,
+import type {
+	AssetTeleported,
+	AssetTeleportedResponse,
+	BlockMetadata,
+	ClientConfig,
+	GetRequestResponse,
+	GetRequestWithStatus,
+	GetResponseByRequestIdResponse,
+	HexString,
+	OrderWithStatus,
+	PostRequestStatus,
+	PostRequestTimeoutStatus,
+	PostRequestWithStatus,
+	RequestStatusKey,
+	RequestStatusWithMetadata,
+	ResponseCommitmentWithValues,
+	RetryConfig,
+	StateMachineResponse,
+	StateMachineUpdate,
+	TokenGatewayAssetTeleportedWithStatus,
+	TimeoutStatusKey,
 } from "@/types"
+
 import {
 	STATE_MACHINE_UPDATES_BY_HEIGHT,
 	STATE_MACHINE_UPDATES_BY_TIMESTAMP,
@@ -37,6 +39,7 @@ import {
 	DEFAULT_POLL_INTERVAL,
 	REQUEST_STATUS_WEIGHTS,
 	TIMEOUT_STATUS_WEIGHTS,
+	dateStringtoTimestamp,
 	parseStateMachineId,
 	postRequestCommitment,
 	retryPromise,
@@ -44,7 +47,16 @@ import {
 	waitForChallengePeriod,
 } from "@/utils"
 import { getChain, type IChain, type SubstrateChain } from "@/chain"
-import { _queryGetRequestInternal, _queryRequestInternal } from "./query-client"
+import {
+	_queryGetRequestInternal,
+	_queryRequestInternal,
+	_queryOrderInternal,
+	_queryTokenGatewayAssetTeleportedInternal,
+} from "./query-client"
+
+import { OrderStatus, RequestStatus, TeleportStatus, TimeoutStatus } from "@/types"
+
+import type { IndexerQueryClient } from "@/types"
 
 /**
  * IndexerClient provides methods for interacting with the Hyperbridge indexer.
@@ -173,9 +185,9 @@ export class IndexerClient {
 		)
 
 		const first_node = response?.stateMachineUpdateEvents?.nodes[0]
-		if (first_node && first_node.createdAt) {
+		if (first_node?.createdAt) {
 			//@ts-ignore
-			first_node.timestamp = Math.floor(new Date(first_node.createdAt).getTime() / 1000)
+			first_node.timestamp = Math.floor(dateStringtoTimestamp(first_node.createdAt) / 1000)
 		}
 		logger.trace("Response >", first_node)
 
@@ -213,9 +225,9 @@ export class IndexerClient {
 		)
 
 		const first_node = response?.stateMachineUpdateEvents?.nodes[0]
-		if (first_node && first_node.createdAt) {
+		if (first_node?.createdAt) {
 			//@ts-ignore
-			first_node.timestamp = Math.floor(new Date(first_node.createdAt).getTime() / 1000)
+			first_node.timestamp = Math.floor(dateStringtoTimestamp(first_node.createdAt) / 1000)
 		}
 		logger.trace("Response >", first_node)
 
@@ -354,7 +366,7 @@ export class IndexerClient {
 		})
 
 		const proof = await hyperbridge.queryProof(
-			{ Requests: [postRequestCommitment(request)] },
+			{ Requests: [postRequestCommitment(request).commitment] },
 			request.dest,
 			BigInt(hyperbridgeFinality.height),
 		)
@@ -409,7 +421,7 @@ export class IndexerClient {
 			hasher: "Keccak",
 		})
 		const events: RequestStatusWithMetadata[] = []
-		const commitment = postRequestCommitment(request)
+		const commitment = postRequestCommitment(request).commitment
 		const reciept = await destChain.queryRequestReceipt(commitment)
 		const destTimestamp = await destChain.timestamp()
 
@@ -417,6 +429,13 @@ export class IndexerClient {
 			this.logger.trace(`Added ${events.length} timeout events`, events)
 			request.statuses = [...req.statuses, ...events]
 			return request
+		}
+
+		if (request.timeoutTimestamp === 0n) {
+			// Early exit for requests with no timeout configured
+			// This prevents unnecessary timeout processing and expensive chain queries
+			// The events array is still empty at this point, so no timeout events are added
+			return addTimeoutEvents(request)
 		}
 
 		// request not timed out
@@ -582,11 +601,12 @@ export class IndexerClient {
 
 		logger.trace("`Request` found")
 		const chain = await getChain(this.config.dest)
-		const timeoutStream = this.timeoutStream(request.timeoutTimestamp, chain)
+		const timeoutStream =
+			request.timeoutTimestamp > 0n ? this.timeoutStream(request.timeoutTimestamp, chain) : undefined
 		const statusStream = this.postRequestStatusStreamInternal(hash)
 
 		logger.trace("Listening for events")
-		const combined = mergeRace(timeoutStream, statusStream)
+		const combined = timeoutStream ? mergeRace(timeoutStream, statusStream) : statusStream
 
 		logger.trace("Listening for events")
 		let item = await combined.next()
@@ -610,7 +630,7 @@ export class IndexerClient {
 	async *timeoutStream(timeoutTimestamp: bigint, chain: IChain): AsyncGenerator<RequestStatusWithMetadata, void> {
 		const logger = this.logger.withTag("[timeoutStream()]")
 
-		if (timeoutTimestamp > 0) {
+		if (timeoutTimestamp > 0n) {
 			let timestamp = await chain.timestamp()
 
 			while (timestamp < timeoutTimestamp) {
@@ -734,7 +754,7 @@ export class IndexerClient {
 					})
 
 					const proof = await hyperbridge.queryProof(
-						{ Requests: [postRequestCommitment(request)] },
+						{ Requests: [postRequestCommitment(request).commitment] },
 						request.dest,
 						BigInt(hyperbridgeFinalized.height),
 					)
@@ -851,9 +871,10 @@ export class IndexerClient {
 		}
 
 		const chain = await getChain(this.config.dest)
-		const timeoutStream = this.timeoutStream(request.timeoutTimestamp, chain)
+		const timeoutStream =
+			request.timeoutTimestamp > 0n ? this.timeoutStream(request.timeoutTimestamp, chain) : undefined
 		const statusStream = this.getRequestStatusStreamInternal(hash)
-		const combined = mergeRace(timeoutStream, statusStream)
+		const combined = timeoutStream ? mergeRace(timeoutStream, statusStream) : statusStream
 
 		let item = await combined.next()
 		while (!item.done) {
@@ -1077,7 +1098,7 @@ export class IndexerClient {
 				? TimeoutStatus.HYPERBRIDGE_TIMED_OUT
 				: TimeoutStatus.PENDING_TIMEOUT
 
-		const commitment = postRequestCommitment(request)
+		const commitment = postRequestCommitment(request).commitment
 		const hyperbridge = (await getChain({
 			...this.config.hyperbridge,
 			hasher: "Keccak",
@@ -1314,16 +1335,6 @@ export class IndexerClient {
 	}
 
 	/**
-	 * Executes an async operation with exponential backoff retry
-	 * @param operation - Async function to execute
-	 * @param retryConfig - Optional retry configuration
-	 * @returns Result of the operation
-	 * @throws Last encountered error after all retries are exhausted
-	 *
-	 * @example
-	 * const result = await this.withRetry(() => this.queryStatus(hash));
-	 */
-	/**
 	 * Query for asset teleported events by sender, recipient, and destination chain
 	 * @param from - The sender address
 	 * @param to - The recipient address
@@ -1362,6 +1373,181 @@ export class IndexerClient {
 		return retryPromise(operation, {
 			...this.defaultRetryConfig,
 			...retryConfig,
+		})
+	}
+
+	/**
+	 * Query for an order by its commitment hash
+	 * @param commitment - The commitment hash of the order
+	 * @returns The order with its status if found, undefined otherwise
+	 */
+	async queryOrder(commitment: HexString): Promise<OrderWithStatus | undefined> {
+		return _queryOrderInternal({
+			commitmentHash: commitment,
+			queryClient: this.client,
+			logger: this.logger,
+		})
+	}
+
+	/**
+	 * Create a Stream of status updates for an order.
+	 * Stream ends when the order reaches a terminal state (FILLED, REDEEMED, or REFUNDED).
+	 * @param commitment - The commitment hash of the order
+	 * @returns AsyncGenerator that emits status updates until a terminal state is reached
+	 * @example
+	 *
+	 * let client = new IndexerClient(config)
+	 * let stream = client.orderStatusStream(commitment)
+	 *
+	 * // you can use a for-await-of loop
+	 * for await (const status of stream) {
+	 *   console.log(status)
+	 * }
+	 *
+	 * // you can also use a while loop
+	 * while (true) {
+	 *   const status = await stream.next()
+	 *   if (status.done) {
+	 *     break
+	 *   }
+	 *   console.log(status.value)
+	 * }
+	 */
+	async *orderStatusStream(commitment: HexString): AsyncGenerator<
+		{
+			status: OrderStatus
+			metadata: {
+				blockHash: string
+				blockNumber: number
+				transactionHash: string
+				timestamp: bigint
+				filler?: string
+			}
+		},
+		void
+	> {
+		const logger = this.logger.withTag("[orderStatusStream]")
+
+		let order: OrderWithStatus | undefined
+
+		while (!order) {
+			await this.sleep_for_interval()
+			order = await _queryOrderInternal({
+				commitmentHash: commitment,
+				queryClient: this.client,
+				logger: this.logger,
+			})
+		}
+
+		logger.trace("`Order` found")
+		// Yield initial status
+		const latestStatus = order.statuses[order.statuses.length - 1]
+		yield {
+			status: latestStatus.status,
+			metadata: latestStatus.metadata,
+		}
+
+		// If we're already in a terminal state, end the stream
+		if ([OrderStatus.FILLED, OrderStatus.REDEEMED, OrderStatus.REFUNDED].includes(latestStatus.status)) {
+			return
+		}
+
+		while (true) {
+			await this.sleep_for_interval()
+			const updatedOrder = await _queryOrderInternal({
+				commitmentHash: commitment,
+				queryClient: this.client,
+				logger: this.logger,
+			})
+
+			if (!updatedOrder) continue
+
+			const newLatestStatus = updatedOrder.statuses[updatedOrder.statuses.length - 1]
+
+			if (newLatestStatus.status !== latestStatus.status) {
+				yield {
+					status: newLatestStatus.status,
+					metadata: newLatestStatus.metadata,
+				}
+
+				if ([OrderStatus.FILLED, OrderStatus.REDEEMED, OrderStatus.REFUNDED].includes(newLatestStatus.status)) {
+					return
+				}
+			}
+		}
+	}
+
+	async *tokenGatewayAssetTeleportedStatusStream(commitment: HexString): AsyncGenerator<
+		{
+			status: TeleportStatus
+			metadata: {
+				blockHash: string
+				blockNumber: number
+				transactionHash: string
+				timestamp: bigint
+			}
+		},
+		void
+	> {
+		const logger = this.logger.withTag("[tokenGatewayAssetTeleportedStatusStream]")
+		logger.trace(`Starting stream for token gateway asset teleported with commitment ${commitment}`)
+
+		let lastStatus: TeleportStatus | undefined
+		let lastBlockNumber: number | undefined
+
+		while (true) {
+			try {
+				const teleport = await this.queryTokenGatewayAssetTeleported(commitment)
+				if (!teleport) {
+					logger.trace("No teleport found, waiting...")
+					await this.sleep_for_interval()
+					continue
+				}
+
+				const statuses = teleport.statuses
+				if (statuses.length === 0) {
+					logger.trace("No statuses found, waiting...")
+					await this.sleep_for_interval()
+					continue
+				}
+
+				// Find the latest status that we haven't seen yet
+				const latestStatus = statuses[statuses.length - 1]
+				if (lastStatus === latestStatus.status && lastBlockNumber === latestStatus.metadata.blockNumber) {
+					logger.trace("No new status, waiting...")
+					await this.sleep_for_interval()
+					continue
+				}
+
+				lastStatus = latestStatus.status
+				lastBlockNumber = latestStatus.metadata.blockNumber
+
+				yield latestStatus
+
+				// If we've reached a final status, end the stream
+				if (
+					latestStatus.status === TeleportStatus.RECEIVED ||
+					latestStatus.status === TeleportStatus.REFUNDED
+				) {
+					logger.trace("Final status reached, ending stream")
+					break
+				}
+
+				await this.sleep_for_interval()
+			} catch (error) {
+				logger.error("Error in token gateway asset teleported status stream:", error)
+				await this.sleep_for_interval()
+			}
+		}
+	}
+
+	private async queryTokenGatewayAssetTeleported(
+		commitment: HexString,
+	): Promise<TokenGatewayAssetTeleportedWithStatus | undefined> {
+		return _queryTokenGatewayAssetTeleportedInternal({
+			commitmentHash: commitment,
+			queryClient: this.client,
+			logger: this.logger,
 		})
 	}
 }
