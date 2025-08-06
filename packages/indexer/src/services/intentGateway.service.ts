@@ -1,19 +1,16 @@
-import { OrderPlaced } from "@/configs/src/types/models/OrderPlaced"
-import {
-	CumulativeVolumeUSD,
-	OrderStatus,
-	OrderStatusMetadata,
-	ProtocolParticipant,
-	RewardPointsActivityType,
-} from "@/configs/src/types"
-import PriceHelper from "@/utils/price.helpers"
-import { timestampToDate } from "@/utils/date.helpers"
-import { ERC6160Ext20Abi__factory } from "@/configs/src/types/contracts"
-import { hexToBytes, bytesToHex, keccak256, encodeAbiParameters } from "viem"
-import type { Hex } from "viem"
 import Decimal from "decimal.js"
-import { PointsService } from "./points.service"
 import { ethers } from "ethers"
+import type { Hex } from "viem"
+import { hexToBytes, bytesToHex, keccak256, encodeAbiParameters } from "viem"
+
+import { OrderStatus, OrderStatusMetadata, ProtocolParticipant, RewardPointsActivityType } from "@/configs/src/types"
+import { ERC6160Ext20Abi__factory } from "@/configs/src/types/contracts"
+import { OrderPlaced } from "@/configs/src/types/models/OrderPlaced"
+import { timestampToDate } from "@/utils/date.helpers"
+import PriceHelper from "@/utils/price.helpers"
+
+import { PointsService } from "./points.service"
+import { VolumeService } from "./volume.service"
 
 export interface TokenInfo {
 	token: Hex
@@ -93,21 +90,7 @@ export class IntentGatewayService {
 				timestamp,
 			)
 
-			// Count the volume in USD
-			let cumulativeVolumeUSD = await CumulativeVolumeUSD.get(`IntentGateway.USER`)
-			if (cumulativeVolumeUSD) {
-				cumulativeVolumeUSD.volumeUSD = new Decimal(cumulativeVolumeUSD.volumeUSD)
-					.plus(new Decimal(inputUSD))
-					.toFixed(18)
-			} else {
-				cumulativeVolumeUSD = await CumulativeVolumeUSD.create({
-					id: "cumulativeVolumeUSD",
-					volumeUSD: new Decimal(inputUSD).toFixed(18),
-					lastUpdatedAt: timestamp,
-				})
-			}
-
-			await cumulativeVolumeUSD.save()
+			await VolumeService.updateVolume("IntentGateway.USER", inputUSD, timestamp)
 		}
 
 		return orderPlaced
@@ -145,13 +128,15 @@ export class IntentGatewayService {
 			tokens.map(async (token) => {
 				const tokenAddress = this.bytes32ToBytes20(token.token)
 				let decimals = 18
+				let symbol = "eth"
 
 				if (tokenAddress != "0x0000000000000000000000000000000000000000") {
 					const tokenContract = ERC6160Ext20Abi__factory.connect(tokenAddress, api)
 					decimals = await tokenContract.decimals()
+					symbol = await tokenContract.symbol()
 				}
 
-				return PriceHelper.getTokenPriceInUSDUniswap(tokenAddress, token.amount, decimals)
+				return PriceHelper.getTokenPriceInUSDCoingecko(symbol, token.amount, decimals)
 			}),
 		)
 
@@ -199,8 +184,6 @@ export class IntentGatewayService {
 					timestamp,
 				)
 
-				// Count the volume in USD
-				let cumulativeVolumeUSD = await CumulativeVolumeUSD.get(`IntentGateway.FILLER`)
 				let outputPaymentInfo: PaymentInfo[] = orderPlaced.outputTokens.map((token, index) => {
 					return {
 						token: token as Hex,
@@ -209,18 +192,7 @@ export class IntentGatewayService {
 					}
 				})
 				let outputUSD = await this.getOutputValuesUSD(outputPaymentInfo)
-				if (cumulativeVolumeUSD) {
-					cumulativeVolumeUSD.volumeUSD = new Decimal(cumulativeVolumeUSD.volumeUSD)
-						.plus(new Decimal(outputUSD.total))
-						.toFixed(18)
-				} else {
-					cumulativeVolumeUSD = await CumulativeVolumeUSD.create({
-						id: `IntentGateway.FILLER`,
-						volumeUSD: new Decimal(outputUSD.total).toFixed(18),
-						lastUpdatedAt: timestamp,
-					})
-				}
-				await cumulativeVolumeUSD.save()
+				await VolumeService.updateVolume("IntentGateway.FILLER", outputUSD.total, timestamp)
 			}
 
 			// Deduct points when order is cancelled

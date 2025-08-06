@@ -1,6 +1,6 @@
 {
-	"name": "hyperbridge-sdk",
-	"version": "1.1.8",
+	"name": "@hyperbridge/sdk",
+	"version": "1.1.10",
 	"description": "The hyperclient SDK provides utilities for querying proofs and statuses for cross-chain requests from HyperBridge.",
 	"type": "module",
 	"types": "./dist/node/index.d.ts",
@@ -44,6 +44,7 @@
 		"build:node": "tsup --config tsup-node.config.ts",
 		"build:browser": "tsup --config tsup-browser.config.ts",
 		"prepublishOnly": "npm run build",
+		"postinstall": "pnpm run build",
 		"test": "npm run test:concurrent && npm run test:sequence",
 		"test:file": "vitest --watch=false --maxConcurrency=1",
 		"test:concurrent": "vitest --watch=false --exclude=./src/tests/sequential",
@@ -59,7 +60,6 @@
 	},
 	"dependencies": {
 		"@async-generator/merge-race": "^1.0.3",
-		"@hyperbridge/filler": "workspace:*",
 		"@polkadot/api": "^15.7.1",
 		"@polkadot/types": "14.0.1",
 		"@polkadot/util": "13.3.1",
@@ -77,6 +77,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",
+		"@hyperbridge/filler": "workspace:*",
 		"@polkadot/keyring": "13.4.3",
 		"@polytope-labs/hyperclient": "1.2.0",
 		"@types/node": "^22.13.5",

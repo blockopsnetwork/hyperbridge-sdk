@@ -6,12 +6,13 @@ import { HyperBridgeService } from "@/services/hyperbridge.service"
 import { Request } from "@/configs/src/types/models"
 import { getBlockTimestamp } from "@/utils/rpc.helpers"
 import { stringify } from "safe-stable-stringify"
+import { wrap } from "@/utils/event.utils"
 
 type EventData = {
 	commitment: string
 	relayer: string
 }
-export async function handleSubstratePostRequestHandledEvent(event: SubstrateEvent): Promise<void> {
+export const handleSubstratePostRequestHandledEvent = wrap(async (event: SubstrateEvent): Promise<void> => {
 	logger.info(`Saw Ismp.PostRequestHandled Event on ${getHostStateMachine(chainId)}`)
 
 	if (!event.extrinsic && event.event.data) return
@@ -48,7 +49,7 @@ export async function handleSubstratePostRequestHandledEvent(event: SubstrateEve
 	}
 
 	logger.info(`Updating Hyperbridge chain stats for ${host}`)
-	await HyperBridgeService.handlePostRequestOrResponseHandledEvent(relayer_id, host)
+	await HyperBridgeService.handlePostRequestOrResponseHandledEvent(relayer_id, host, blockTimestamp)
 
 	logger.info(
 		`Handling ISMP PostRequestHandled Event: ${stringify({
@@ -71,4 +72,4 @@ export async function handleSubstratePostRequestHandledEvent(event: SubstrateEve
 		status,
 		transactionHash: extrinsic?.extrinsic.hash.toString() || "",
 	})
-}
+})

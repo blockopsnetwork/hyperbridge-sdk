@@ -210,6 +210,11 @@ type Relayer @entity {
 	A list of important stats for the Relayer on every network that they support
 	"""
 	perChainStats: [RelayerStatsPerChain]! @derivedFrom(field: "relayer")
+
+	"""
+	Last updated at
+	"""
+	lastUpdatedAt: BigInt
 }
 
 """
@@ -1094,4 +1099,61 @@ type CumulativeVolumeUSD @entity {
 	Volume in USD
 	"""
 	volumeUSD: String!
+}
+
+type DailyVolumeUSD @entity {
+	"""
+	Unique identifier for the daily volume stats
+	"""
+	id: ID!
+
+	"""
+	Last updated at
+	"""
+	lastUpdatedAt: BigInt!
+
+	"""
+	The timestamp when this record was created
+	"""
+	createdAt: Date!
+
+	"""
+	Last 24hrs Volume in USD
+	"""
+	last24HoursVolumeUSD: String!
+}
+
+"""
+Daily Hyperbridge Protocol Fees Stats
+"""
+type DailyProtocolFeesStats @entity {
+    """
+    Unique identifier of the daily protocol fees
+    """
+    id: ID!
+
+   	"""
+	The chain on which the protocol fees are charged
+	"""
+	chain: String! @index
+
+	"""
+	The ID of the StateMachine
+	"""
+	stateMachineId: String! @index
+
+	"""
+	Last updated at
+	"""
+	lastUpdatedAt: BigInt!
+
+	"""
+	The timestamp when this record was created
+	"""
+	createdAt: Date!
+
+	"""
+	Last 24Hrs Protocol Fees Earned
+	"""
+	last24HoursProtocolFeesEarned: BigInt! @index
 }
